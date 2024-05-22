@@ -1,15 +1,7 @@
 const inquirer = require ('inquirer');
-const express = require('express');   
-const routes = require('./routes');
 //Importing connection pool to prevent frequent queries from slowing down the application
 const {Pool} = require('pg');  
 const { table } = require('console');
-
-const PORT = process.env.PORT || 3001; 
-const app = express();   
-
-app.use(express.json()); 
-app.use(routes);  
 
 const pool = new Pool(
     {
@@ -69,7 +61,7 @@ const mainMenu = () => {
 }; 
 
 const viewDepartments = async () => {
-    const res = await pool.query('SELECT * FROM department'); 
+    const res = await pool.query('SELECT * FROM departments'); 
     console.table(res.rows);
     mainMenu(); 
 }; 
@@ -77,20 +69,14 @@ const viewDepartments = async () => {
 const viewRoles = async () => {
     const res = await pool.query(`
     SELECT roles.role_id, roles.role_title, roles.salary, departments.department_name AS department
-    FROM 
-    JOIN department ON roles.department_id = departments.departments_id`);
+    FROM roles JOIN departments ON roles.department_id = departments.department_id;`);
     console.table(res.rows);
     mainMenu();
 }; 
 
 const viewEmployees = async () => {
-    const res = await pool.query(`
-      
-    `);
-    console.table(res.rows.map(row => ({
-      ...row,
-      manager: row.manager_first_name ? `${row.manager_first_name} ${row.manager_last_name}` : 'None'
-    })));
+    const res = await pool.query(`SELECT employees.employee_id, employees.first_name, employees.last_name, roles.salary, roles.role_title, CONCAT(managers.first_name, ' ', managers.last_name) AS manager FROM employees JOIN roles ON employees.role_id = roles.role_id LEFT JOIN employees AS managers ON employees.manager_id = managers.employee_id;`);
+    console.table(res.rows)
     mainMenu();
   }; 
 
@@ -99,16 +85,33 @@ const addDepartment = () => {
         type: 'input', 
         name: 'name', 
         message: 'Enter the name of the department: '
-    }).then(async answer => {
-        await pool.query('INSERT INTO department (department_name) VALUES ($1)', [answer.department_name]);
-        console.log(`Added department: ${answer.department_name}`); 
+    }).then(answer => {
+        pool.query('INSERT INTO departments (department_name) VALUES ($1)', [answer.name])
+        .then (()=>{
+          console.log(`Added department: ${answer.name}`); 
+          mainMenu();
+        })
+        .catch(error => {
+          if (error.code === '23505') {
+            console.error('Error: Duplicate department id detected');
+          } else {
+            console.error('Error inserting department: ', error); 
+          }
+          mainMenu();
+        })
+        
+        
         mainMenu(); 
     });
 }; 
 
 const addRole = () => {
-    pool.query('SELECT * FROM department').then(res => {
-      const departments = res.rows.map(row => ({ name: row.name, value: row.id }));
+    pool.query('SELECT * FROM departments')
+      .then(res => {
+      const departments = res.rows.map(row => ({ 
+        name: row.department_name, 
+        value: row.department_id 
+      }));
       inquirer.prompt([
         {
           type: 'input',
@@ -127,8 +130,17 @@ const addRole = () => {
           choices: departments
         }
       ]).then(async answers => {
-        await pool.query('INSERT INTO role (title, salary, department_id) VALUES ($1, $2, $3)', [answers.title, answers.salary, answers.department_id]);
-        console.log(`Added role: ${answers.title}`);
+        pool.query('INSERT INTO roles (role_title, salary, department_id) VALUES ($1, $2, $3)', 
+        [answers.title, answers.salary, answers.department_id]);
+        console.log(`Added role: ${answers.role_title}`);
+        mainMenu();
+      })
+      .catch(error => {
+        if (error.code === '23505') {
+          console.error('Error: Duplicate role id detected');
+        } else {
+          console.error('Error inserting role: ', error);
+        } 
         mainMenu();
       });
     });
@@ -136,11 +148,11 @@ const addRole = () => {
   
   const addEmployee = () => {
     Promise.all([
-      pool.query('SELECT * FROM role'),
-      pool.query('SELECT * FROM employee')
+      pool.query('SELECT * FROM roles'),
+      pool.query('SELECT * FROM employees')
     ]).then(([rolesRes, employeesRes]) => {
-      const roles = rolesRes.rows.map(row => ({ name: row.title, value: row.id }));
-      const managers = employeesRes.rows.map(row => ({ name: `${row.first_name} ${row.last_name}`, value: row.id }));
+      const roles = rolesRes.rows.map(row => ({ name: row.role_title, value: row.role_id }));
+      const managers = employeesRes.rows.map(row => ({ name: `${row.first_name} ${row.last_name}`, value: row.role_title }));
       managers.unshift({ name: 'None', value: null });
   
       inquirer.prompt([
@@ -166,21 +178,34 @@ const addRole = () => {
           message: 'Select the manager for the employee:',
           choices: managers
         }
-      ]).then(async answers => {
-        await pool.query('INSERT INTO employee (first_name, last_name, role_id, manager_id) VALUES ($1, $2, $3, $4)', [answers.first_name, answers.last_name, answers.role_id, answers.manager_id]);
-        console.log(`Added employee: ${answers.first_name} ${answers.last_name}`);
+      ]).then( answers => {
+         pool.query('INSERT INTO employees (first_name, last_name, role_id, manager_id) VALUES ($1, $2, $3, $4)', 
+         [answers.first_name, answers.last_name, answers.role_id, answers.manager_id])
+         .then(()=> {
+          console.log(`Added employee: ${answers.first_name} ${answers.last_name}`);
+          mainMenu();
+         })
+        .catch(error => {
+          console.error('Error inserting employee: ', error);
+          mainMenu();
+        });
+      }).catch(error =>{
+        console.error('Error during prompt:', error); 
         mainMenu();
       });
+    }).catch(error => {
+      console.error('Error fetching roles for employees: ', error);
+      mainMenu();
     });
   };
   
   const updateEmployeeRole = () => {
     Promise.all([
-      pool.query('SELECT * FROM employee'),
-      pool.query('SELECT * FROM role')
+      pool.query('SELECT * FROM employees'),
+      pool.query('SELECT * FROM roles')
     ]).then(([employeesRes, rolesRes]) => {
-      const employees = employeesRes.rows.map(row => ({ name: `${row.first_name} ${row.last_name}`, value: row.id }));
-      const roles = rolesRes.rows.map(row => ({ name: row.title, value: row.id }));
+      const employees = employeesRes.rows.map(row => ({ name: `${row.first_name} ${row.last_name}`, value: row.employee_id }));
+      const roles = rolesRes.rows.map(row => ({ name: row.role_title, value: row.role_id }));
   
       inquirer.prompt([
         {
@@ -195,13 +220,26 @@ const addRole = () => {
           message: 'Select the new role for the employee:',
           choices: roles
         }
-      ]).then(async answers => {
-        await pool.query('UPDATE employee SET role_id = $1 WHERE id = $2', [answers.role_id, answers.employee_id]);
-        console.log(`Updated employee's role`);
+      ]).then(answers => {
+         pool.query('UPDATE employees SET role_id = $1 WHERE employee_id = $2', 
+         [answers.role_id, answers.employee_id])
+         .then(()=> {
+            console.log(`Updated employee's role`);
+            mainMenu();
+      })
+      .catch(error => {
+        console.error('Error updating employee role: ', error);
         mainMenu();
-      });
+      }); 
+    }).catch(error =>{
+      console.error('Error during prompt: ', error); 
+      mainMenu();
     });
-  };
+  }).catch(error =>{
+    console.error('Error fetching employee roles: ', error); 
+    mainMenu();
+  }); 
+};
   
   // Start the application
   mainMenu();
