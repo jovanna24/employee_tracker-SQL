@@ -101,7 +101,7 @@ const addDepartment = () => {
         })
         
         
-        mainMenu(); 
+        // mainMenu(); 
     });
 }; 
 
